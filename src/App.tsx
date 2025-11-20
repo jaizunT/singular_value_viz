@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Play, RefreshCw, Settings, Plus, Trash2, Info, Maximize, PenTool, Activity, X, Scaling, ChevronRight, LayoutTemplate, Eye, Menu, Columns, Monitor } from 'lucide-react';
 
 // --- Types & Interfaces ---
@@ -307,20 +307,23 @@ interface PlotlyGraphProps {
   config?: any;
 }
 
-const PlotlyGraph = ({ data, layout, style, config }: PlotlyGraphProps) => {
+// Optimization: Wrapped in React.memo to prevent unnecessary re-renders
+const PlotlyGraph = React.memo(({ data, layout, style, config }: PlotlyGraphProps) => {
   const Plotly = usePlotly();
   const containerRef = useRef<HTMLDivElement>(null);
   
   useEffect(() => {
     if (Plotly && containerRef.current) {
       const defaultConfig = { responsive: true, displayModeBar: false };
-      Plotly.newPlot(containerRef.current, data, layout, { ...defaultConfig, ...config });
+      // Optimization: Use Plotly.react (faster update) instead of newPlot (destroy/create)
+      Plotly.react(containerRef.current, data, layout, { ...defaultConfig, ...config });
     }
   }, [Plotly, data, layout, config]);
 
   if (!Plotly) return <div className="flex items-center justify-center h-full bg-gray-50 text-gray-400 text-sm">Loading...</div>;
   return <div ref={containerRef} style={style} className="w-full h-full" />;
-};
+});
+PlotlyGraph.displayName = 'PlotlyGraph';
 
 // --- DRAWING CANVAS COMPONENT ---
 interface SpectrumCanvasProps {
@@ -433,6 +436,115 @@ const SpectrumCanvas = ({
     </div>
   );
 };
+
+// --- EXTRACTED AND MEMOIZED COMPONENT CARDS ---
+// Moving these outside App() prevents them from being redefined (and unmounting/remounting) on every render
+
+interface CardProps {
+    title: string;
+    data: HeatmapData | null;
+    heightClass?: string;
+    showInfo?: boolean;
+    onExpand?: () => void;
+    className?: string;
+}
+
+const HeatmapCard = React.memo(({ title, data, heightClass = "h-[400px]", showInfo = true, onExpand }: CardProps) => (
+  <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
+    <div 
+      className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
+      onClick={onExpand}
+    >
+      <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
+        <Activity className="w-4 h-4 text-indigo-500" /> {title}
+      </h3>
+      <div className="flex items-center gap-2">
+          <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
+            <Maximize className="w-3.5 h-3.5" />
+          </button>
+          {showInfo && (
+          <div className="group/info relative" onClick={(e) => e.stopPropagation()}>
+            <Info className="w-4 h-4 text-gray-300 hover:text-indigo-500 cursor-help transition-colors" />
+            <div className="absolute right-0 top-6 w-64 p-3 bg-slate-800 text-slate-100 text-xs rounded-lg shadow-xl opacity-0 group-hover/info:opacity-100 pointer-events-none z-50 transition-opacity border border-slate-700">
+              <p className="font-bold mb-1">Heatmap View</p>
+              <ul className="list-disc pl-3 space-y-1 opacity-90">
+                <li>X-axis: Iteration steps</li>
+                <li>Y-axis: Log10(Singular Value)</li>
+                <li>Color: Density of values</li>
+              </ul>
+            </div>
+          </div>
+          )}
+      </div>
+    </div>
+    <div className="flex-1 p-2 relative">
+      {data && (
+        <PlotlyGraph
+          data={[{ z: data.z, x: data.x, y: data.y, type: 'heatmap', colorscale: 'Viridis', showscale: false }]}
+          layout={{ margin: { t: 10, r: 10, l: 40, b: 30 }, xaxis: { title: 'Iter' }, yaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 10} }}
+        />
+      )}
+    </div>
+  </div>
+));
+HeatmapCard.displayName = 'HeatmapCard';
+
+const LineCard = React.memo(({ title, data, heightClass = "h-[400px]", onExpand }: CardProps) => (
+  <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
+    <div 
+      className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
+      onClick={onExpand}
+    >
+        <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
+        <ChevronRight className="w-4 h-4 text-indigo-500" /> {title}
+      </h3>
+      <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
+          <Maximize className="w-3.5 h-3.5" />
+      </button>
+    </div>
+    <div className="flex-1 p-2 relative">
+      {data && (
+        <PlotlyGraph
+          data={[
+            { x: data.y, y: data.z.map(row => row[0]), type: 'scatter', mode: 'lines', name: 'Initial', fill: 'tozeroy', line: { color: '#94a3b8', width: 2 } },
+            { x: data.y, y: data.z.map(row => row[row.length - 1]), type: 'scatter', mode: 'lines', name: 'Final', fill: 'tozeroy', line: { color: '#4f46e5', width: 3 } }
+          ]}
+          layout={{ margin: { t: 10, r: 10, l: 40, b: 30 }, xaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, yaxis: { title: 'Density' }, showlegend: false, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 10} }}
+        />
+      )}
+    </div>
+  </div>
+));
+LineCard.displayName = 'LineCard';
+
+const SurfaceCard = React.memo(({ title, data, heightClass = "h-[400px]", className = "", onExpand }: CardProps) => (
+  <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} ${className} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
+    <div 
+      className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
+      onClick={onExpand}
+    >
+      <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
+        <Maximize className="w-4 h-4 text-indigo-500" /> {title}
+      </h3>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded">Interactive</span>
+        <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
+          <Maximize className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+    <div className="flex-1 p-2 relative">
+      {data && (
+        <PlotlyGraph
+          data={[{ z: data.z.map(row => row), x: data.x, y: data.y, type: 'surface', colorscale: 'Viridis', contours: { z: { show: true, usecolormap: true, highlightcolor: "#42f462", project: { z: true } } } }]}
+          layout={{ margin: { t: 0, r: 0, l: 0, b: 0 }, scene: { xaxis: { title: 'Iter' }, yaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, zaxis: { title: 'Density' }, camera: { eye: { x: 1.5, y: 1.5, z: 1.2 } } }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 11} }}
+        />
+      )}
+    </div>
+  </div>
+));
+SurfaceCard.displayName = 'SurfaceCard';
+
 
 export default function App() {
   // -- State: UI --
@@ -579,108 +691,13 @@ export default function App() {
     }
   };
 
-  // Common Graph Components for Reusability
-  interface CardProps {
-      title: string;
-      data: HeatmapData | null;
-      heightClass?: string;
-      showInfo?: boolean;
-      onExpand?: () => void;
-      className?: string;
-  }
-
-  const HeatmapCard = ({ title, data, heightClass = "h-[400px]", showInfo = true, onExpand }: CardProps) => (
-    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
-      <div 
-        className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
-        onClick={onExpand}
-      >
-        <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
-          <Activity className="w-4 h-4 text-indigo-500" /> {title}
-        </h3>
-        <div className="flex items-center gap-2">
-           <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
-              <Maximize className="w-3.5 h-3.5" />
-           </button>
-           {showInfo && (
-            <div className="group/info relative" onClick={(e) => e.stopPropagation()}>
-              <Info className="w-4 h-4 text-gray-300 hover:text-indigo-500 cursor-help transition-colors" />
-              <div className="absolute right-0 top-6 w-64 p-3 bg-slate-800 text-slate-100 text-xs rounded-lg shadow-xl opacity-0 group-hover/info:opacity-100 pointer-events-none z-50 transition-opacity border border-slate-700">
-                <p className="font-bold mb-1">Heatmap View</p>
-                <ul className="list-disc pl-3 space-y-1 opacity-90">
-                  <li>X-axis: Iteration steps</li>
-                  <li>Y-axis: Log10(Singular Value)</li>
-                  <li>Color: Density of values</li>
-                </ul>
-              </div>
-            </div>
-           )}
-        </div>
-      </div>
-      <div className="flex-1 p-2 relative">
-        {data && (
-          <PlotlyGraph
-            data={[{ z: data.z, x: data.x, y: data.y, type: 'heatmap', colorscale: 'Viridis', showscale: false }]}
-            layout={{ margin: { t: 10, r: 10, l: 40, b: 30 }, xaxis: { title: 'Iter' }, yaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 10} }}
-          />
-        )}
-      </div>
-    </div>
-  );
-
-  const LineCard = ({ title, data, heightClass = "h-[400px]", onExpand }: CardProps) => (
-    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
-      <div 
-        className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
-        onClick={onExpand}
-      >
-         <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
-          <ChevronRight className="w-4 h-4 text-indigo-500" /> {title}
-        </h3>
-        <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
-            <Maximize className="w-3.5 h-3.5" />
-        </button>
-      </div>
-      <div className="flex-1 p-2 relative">
-        {data && (
-          <PlotlyGraph
-            data={[
-              { x: data.y, y: data.z.map(row => row[0]), type: 'scatter', mode: 'lines', name: 'Initial', fill: 'tozeroy', line: { color: '#94a3b8', width: 2 } },
-              { x: data.y, y: data.z.map(row => row[row.length - 1]), type: 'scatter', mode: 'lines', name: 'Final', fill: 'tozeroy', line: { color: '#4f46e5', width: 3 } }
-            ]}
-            layout={{ margin: { t: 10, r: 10, l: 40, b: 30 }, xaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, yaxis: { title: 'Density' }, showlegend: false, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 10} }}
-          />
-        )}
-      </div>
-    </div>
-  );
-
-  const SurfaceCard = ({ title, data, heightClass = "h-[400px]", className = "", onExpand }: CardProps) => (
-    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} ${className} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
-      <div 
-        className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
-        onClick={onExpand}
-      >
-        <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
-          <Maximize className="w-4 h-4 text-indigo-500" /> {title}
-        </h3>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded">Interactive</span>
-          <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
-            <Maximize className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-      <div className="flex-1 p-2 relative">
-        {data && (
-          <PlotlyGraph
-            data={[{ z: data.z.map(row => row), x: data.x, y: data.y, type: 'surface', colorscale: 'Viridis', contours: { z: { show: true, usecolormap: true, highlightcolor: "#42f462", project: { z: true } } } }]}
-            layout={{ margin: { t: 0, r: 0, l: 0, b: 0 }, scene: { xaxis: { title: 'Iter' }, yaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, zaxis: { title: 'Density' }, camera: { eye: { x: 1.5, y: 1.5, z: 1.2 } } }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 11} }}
-          />
-        )}
-      </div>
-    </div>
-  );
+  // Define expand handlers with useCallback to keep their identity stable
+  const handleExpand = useCallback((type: 'heatmap' | 'line' | 'surface', alg: string, title: string) => {
+    const data = heatmaps[alg];
+    if (data) {
+      setExpandedView({ type, data, title });
+    }
+  }, [heatmaps]);
 
   return (
     <div className="fixed inset-0 w-screen h-screen bg-slate-50 text-slate-800 font-sans overflow-hidden flex flex-col text-left z-50">
@@ -932,13 +949,13 @@ export default function App() {
                     title="Spectrum Evolution" 
                     data={heatmaps[algorithm]} 
                     heightClass="h-[400px] md:h-[500px]"
-                    onExpand={() => heatmaps[algorithm] && setExpandedView({ type: 'heatmap', data: heatmaps[algorithm]!, title: 'Spectrum Evolution' })}
+                    onExpand={() => handleExpand('heatmap', algorithm, 'Spectrum Evolution')}
                 />
                 <LineCard 
                     title="Initial vs. Final" 
                     data={heatmaps[algorithm]} 
                     heightClass="h-[400px] md:h-[500px]" 
-                    onExpand={() => heatmaps[algorithm] && setExpandedView({ type: 'line', data: heatmaps[algorithm]!, title: 'Initial vs Final' })}
+                    onExpand={() => handleExpand('line', algorithm, 'Initial vs Final')}
                 />
 
                 {/* 3D Surface (Full Width on XL) */}
@@ -947,7 +964,7 @@ export default function App() {
                     data={heatmaps[algorithm]} 
                     className="xl:col-span-2" 
                     heightClass="h-[400px]" 
-                    onExpand={() => heatmaps[algorithm] && setExpandedView({ type: 'surface', data: heatmaps[algorithm]!, title: '3D Density Landscape' })}
+                    onExpand={() => handleExpand('surface', algorithm, '3D Density Landscape')}
                 />
               </div>
             ) : (
@@ -961,19 +978,19 @@ export default function App() {
                         data={heatmaps.polar} 
                         heightClass="h-[300px]" 
                         showInfo={false} 
-                        onExpand={() => heatmaps.polar && setExpandedView({ type: 'heatmap', data: heatmaps.polar!, title: 'Polar Evolution' })}
+                        onExpand={() => handleExpand('heatmap', 'polar', 'Polar Evolution')}
                    />
                    <LineCard 
                         title="Polar Initial vs Final" 
                         data={heatmaps.polar} 
                         heightClass="h-[250px]" 
-                        onExpand={() => heatmaps.polar && setExpandedView({ type: 'line', data: heatmaps.polar!, title: 'Polar Initial vs Final' })}
+                        onExpand={() => handleExpand('line', 'polar', 'Polar Initial vs Final')}
                    />
                    <SurfaceCard 
                         title="Polar 3D" 
                         data={heatmaps.polar} 
                         heightClass="h-[250px]" 
-                        onExpand={() => heatmaps.polar && setExpandedView({ type: 'surface', data: heatmaps.polar!, title: 'Polar 3D' })}
+                        onExpand={() => handleExpand('surface', 'polar', 'Polar 3D')}
                    />
                 </div>
 
@@ -985,19 +1002,19 @@ export default function App() {
                         data={heatmaps.newton} 
                         heightClass="h-[300px]" 
                         showInfo={false} 
-                        onExpand={() => heatmaps.newton && setExpandedView({ type: 'heatmap', data: heatmaps.newton!, title: 'Newton Evolution' })}
+                        onExpand={() => handleExpand('heatmap', 'newton', 'Newton Evolution')}
                    />
                    <LineCard 
                         title="Newton Initial vs Final" 
                         data={heatmaps.newton} 
                         heightClass="h-[250px]" 
-                        onExpand={() => heatmaps.newton && setExpandedView({ type: 'line', data: heatmaps.newton!, title: 'Newton Initial vs Final' })}
+                        onExpand={() => handleExpand('line', 'newton', 'Newton Initial vs Final')}
                    />
                    <SurfaceCard 
                         title="Newton 3D" 
                         data={heatmaps.newton} 
                         heightClass="h-[250px]" 
-                        onExpand={() => heatmaps.newton && setExpandedView({ type: 'surface', data: heatmaps.newton!, title: 'Newton 3D' })}
+                        onExpand={() => handleExpand('surface', 'newton', 'Newton 3D')}
                    />
                 </div>
 
@@ -1009,19 +1026,19 @@ export default function App() {
                         data={heatmaps.jordan} 
                         heightClass="h-[300px]" 
                         showInfo={false} 
-                        onExpand={() => heatmaps.jordan && setExpandedView({ type: 'heatmap', data: heatmaps.jordan!, title: 'Jordan Evolution' })}
+                        onExpand={() => handleExpand('heatmap', 'jordan', 'Jordan Evolution')}
                    />
                    <LineCard 
                         title="Jordan Initial vs Final" 
                         data={heatmaps.jordan} 
                         heightClass="h-[250px]" 
-                        onExpand={() => heatmaps.jordan && setExpandedView({ type: 'line', data: heatmaps.jordan!, title: 'Jordan Initial vs Final' })}
+                        onExpand={() => handleExpand('line', 'jordan', 'Jordan Initial vs Final')}
                    />
                    <SurfaceCard 
                         title="Jordan 3D" 
                         data={heatmaps.jordan} 
                         heightClass="h-[250px]" 
-                        onExpand={() => heatmaps.jordan && setExpandedView({ type: 'surface', data: heatmaps.jordan!, title: 'Jordan 3D' })}
+                        onExpand={() => handleExpand('surface', 'jordan', 'Jordan 3D')}
                    />
                 </div>
               </div>
