@@ -1,15 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Play, RefreshCw, Settings, Plus, Trash2, Info, Maximize, PenTool, Activity, X, Scaling, ChevronRight } from 'lucide-react';
+import { Play, RefreshCw, Settings, Plus, Trash2, Info, Maximize, PenTool, Activity, X, Scaling, ChevronRight, LayoutTemplate, Eye, Menu, Columns, Monitor, Minimize2 } from 'lucide-react';
 
 /**
  * ------------------------------------------------------------------
- * POLAR EXPRESS CORE LOGIC
+ * CORE ALGORITHMS
  * ------------------------------------------------------------------
  */
 
-type CoeffTuple = [number, number, number];
-
-const DEFAULT_RAW_COEFFS: CoeffTuple[] = [
+// Polar Express Coefficients
+const DEFAULT_RAW_COEFFS = [
   [8.28721201814563, -23.595886519098837, 17.300387312530933],
   [4.107059111542203, -2.9478499167379106, 0.5448431082926601],
   [3.9486908534822946, -2.908902115962949, 0.5518191394370137],
@@ -24,11 +23,11 @@ const DEFAULT_SAFETY = 1.01;
 const DEFAULT_CUSHION = 0.024;
 
 function getCoeffsForConfig(
-  numIters: number,
-  safety: number = DEFAULT_SAFETY,
-  cushion: number = DEFAULT_CUSHION
-): CoeffTuple[] {
-  let scaled: CoeffTuple[] = DEFAULT_RAW_COEFFS.map((triple, i) => {
+  numIters,
+  safety = DEFAULT_SAFETY,
+  cushion = DEFAULT_CUSHION
+) {
+  let scaled = DEFAULT_RAW_COEFFS.map((triple, i) => {
     const [a, b, c] = triple;
     if (i === DEFAULT_RAW_COEFFS.length - 1) {
       return [a, b, c];
@@ -54,21 +53,53 @@ function getCoeffsForConfig(
   }
 }
 
-function updateSigmas(sigmas: Float64Array, coeffs: CoeffTuple[]): Float64Array[] {
-  const history: Float64Array[] = [new Float64Array(sigmas)];
+function updateSigmas(
+  sigmas, 
+  algorithm,
+  coeffs, // For Polar
+  numIters      // For Newton/Jordan
+) {
+  const history = [new Float64Array(sigmas)];
   let currentSigmas = new Float64Array(sigmas);
 
-  for (const [a, b, c] of coeffs) {
-    const nextSigmas = new Float64Array(currentSigmas.length);
-    for (let i = 0; i < currentSigmas.length; i++) {
-      const s = currentSigmas[i];
-      const lam = s * s;
-      const scale = a + b * lam + c * (lam * lam);
-      nextSigmas[i] = scale * s;
+  if (algorithm === 'polar') {
+    for (const [a, b, c] of coeffs) {
+      const nextSigmas = new Float64Array(currentSigmas.length);
+      for (let i = 0; i < currentSigmas.length; i++) {
+        const s = currentSigmas[i];
+        const lam = s * s;
+        const scale = a + b * lam + c * (lam * lam);
+        nextSigmas[i] = scale * s;
+      }
+      currentSigmas = nextSigmas;
+      history.push(currentSigmas);
     }
-    currentSigmas = nextSigmas;
-    history.push(currentSigmas);
+  } else if (algorithm === 'newton') {
+    // Newton-Schulz: x_k+1 = 0.5 * x_k * (3 - x_k^2)
+    for (let k = 0; k < numIters; k++) {
+      const nextSigmas = new Float64Array(currentSigmas.length);
+      for (let i = 0; i < currentSigmas.length; i++) {
+        const s = currentSigmas[i];
+        nextSigmas[i] = 0.5 * s * (3 - s * s);
+      }
+      currentSigmas = nextSigmas;
+      history.push(currentSigmas);
+    }
+  } else if (algorithm === 'jordan') {
+    // Jordan (Matrix Sign / Newton Square Root): x_k+1 = 0.5 * (x_k + 1/x_k)
+    for (let k = 0; k < numIters; k++) {
+      const nextSigmas = new Float64Array(currentSigmas.length);
+      for (let i = 0; i < currentSigmas.length; i++) {
+        const s = currentSigmas[i];
+        // Prevent division by zero
+        if (Math.abs(s) < 1e-15) nextSigmas[i] = s; 
+        else nextSigmas[i] = 0.5 * (s + 1.0 / s);
+      }
+      currentSigmas = nextSigmas;
+      history.push(currentSigmas);
+    }
   }
+
   return history;
 }
 
@@ -78,19 +109,7 @@ function updateSigmas(sigmas: Float64Array, coeffs: CoeffTuple[]): Float64Array[
  * ------------------------------------------------------------------
  */
 
-interface SpectrumPeak {
-  id: string;
-  mean: number;
-  std: number;
-  weight: number;
-}
-
-interface SketchPoint {
-  x: number;
-  y: number;
-}
-
-const PRESETS: Record<string, SpectrumPeak[]> = {
+const PRESETS = {
   flat: [
     { id: '1', mean: -4, std: 1.5, weight: 1 },
     { id: '2', mean: 0, std: 1.5, weight: 1 },
@@ -109,7 +128,7 @@ const PRESETS: Record<string, SpectrumPeak[]> = {
   ]
 };
 
-function generateSigmasFromPeaks(peaks: SpectrumPeak[], count = 10000): Float64Array {
+function generateSigmasFromPeaks(peaks, count = 10000) {
   const sigmas = new Float64Array(count);
   const totalWeight = peaks.reduce((sum, p) => sum + p.weight, 0);
   let currentIndex = 0;
@@ -130,11 +149,11 @@ function generateSigmasFromPeaks(peaks: SpectrumPeak[], count = 10000): Float64A
 }
 
 function generateSigmasFromSketch(
-  points: SketchPoint[],
-  minLog: number,
-  maxLog: number,
+  points,
+  minLog,
+  maxLog,
   count = 10000
-): Float64Array {
+) {
   if (points.length < 2) return new Float64Array(count).fill(Math.pow(10, (minLog + maxLog) / 2));
 
   const buckets = 500;
@@ -193,21 +212,25 @@ function generateSigmasFromSketch(
 }
 
 function computeHistogram(
-  values: Float64Array,
-  minLog: number,
-  maxLog: number,
-  bins: number
-): number[] {
+  values,
+  minLog,
+  maxLog,
+  bins
+) {
   const histogram = new Array(bins).fill(0);
-  const step = (maxLog - minLog) / bins;
+  // Avoid division by zero if min == max
+  const safeMax = maxLog === minLog ? maxLog + 1 : maxLog;
+  const step = (safeMax - minLog) / bins;
 
   for (let i = 0; i < values.length; i++) {
     const val = values[i];
-    if (val <= 0) continue;
+    if (val <= 0) continue; // Skip negative or zero sigmas (diverged)
     const logVal = Math.log10(val);
-    if (logVal >= minLog && logVal < maxLog) {
+    if (logVal >= minLog && logVal < safeMax) {
       const binIdx = Math.floor((logVal - minLog) / step);
-      histogram[binIdx]++;
+      if (binIdx >= 0 && binIdx < bins) {
+        histogram[binIdx]++;
+      }
     }
   }
   const total = values.length;
@@ -221,33 +244,33 @@ function computeHistogram(
  */
 
 const usePlotly = () => {
-  const [plotly, setPlotly] = useState<any>(null);
+  const [plotly, setPlotly] = useState(null);
   useEffect(() => {
-    if ((window as any).Plotly) {
-      setPlotly((window as any).Plotly);
+    if (window.Plotly) {
+      setPlotly(window.Plotly);
       return;
     }
     const script = document.createElement('script');
     script.src = 'https://cdn.plot.ly/plotly-2.27.0.min.js';
     script.async = true;
-    script.onload = () => setPlotly((window as any).Plotly);
+    script.onload = () => setPlotly(window.Plotly);
     document.body.appendChild(script);
   }, []);
   return plotly;
 };
 
-const PlotlyGraph = ({ data, layout, style }: { data: any[]; layout: any; style?: any }) => {
+const PlotlyGraph = ({ data, layout, style, config }) => {
   const Plotly = usePlotly();
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef(null);
   
   useEffect(() => {
     if (Plotly && containerRef.current) {
-      const config = { responsive: true, displayModeBar: false };
-      Plotly.newPlot(containerRef.current, data, layout, config);
+      const defaultConfig = { responsive: true, displayModeBar: false };
+      Plotly.newPlot(containerRef.current, data, layout, { ...defaultConfig, ...config });
     }
-  }, [Plotly, data, layout]);
+  }, [Plotly, data, layout, config]);
 
-  if (!Plotly) return <div className="flex items-center justify-center h-full bg-gray-50 text-gray-400 text-sm">Loading Visualization Lib...</div>;
+  if (!Plotly) return <div className="flex items-center justify-center h-full bg-gray-50 text-gray-400 text-sm">Loading...</div>;
   return <div ref={containerRef} style={style} className="w-full h-full" />;
 };
 
@@ -257,13 +280,8 @@ const SpectrumCanvas = ({
   setPoints,
   rangeMin,
   rangeMax
-}: {
-  points: SketchPoint[];
-  setPoints: React.Dispatch<React.SetStateAction<SketchPoint[]>>;
-  rangeMin: number;
-  rangeMax: number;
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
@@ -313,17 +331,17 @@ const SpectrumCanvas = ({
     ctx.fillText(`${rangeMax}`, w - 20, h - 4);
   }, [points, rangeMin, rangeMax]);
 
-  const handleInteract = (e: React.MouseEvent | React.TouchEvent) => {
+  const handleInteract = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     let clientX, clientY;
-    if ('touches' in e) {
+    if (e.touches) {
       clientX = e.touches[0].clientX;
       clientY = e.touches[0].clientY;
     } else {
-      clientX = (e as React.MouseEvent).clientX;
-      clientY = (e as React.MouseEvent).clientY;
+      clientX = e.clientX;
+      clientY = e.clientY;
     }
 
     const x = (clientX - rect.left) / rect.width;
@@ -362,19 +380,40 @@ const SpectrumCanvas = ({
 };
 
 export default function App() {
+  // -- State: UI --
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [viewMode, setViewMode] = useState('single'); // 'single' | 'compare'
+  const [expandedView, setExpandedView] = useState(null); // { type: 'heatmap'|'line'|'surface', data, title }
+
+  // -- State: Parameters --
+  const [algorithm, setAlgorithm] = useState('polar');
   const [numIters, setNumIters] = useState(8);
   const [safety, setSafety] = useState(1.01);
   const [cushion, setCushion] = useState(0.024);
   const [normalizeFrobenius, setNormalizeFrobenius] = useState(false);
+  
+  // -- State: Range --
   const [rangeMin, setRangeMin] = useState(-7);
   const [rangeMax, setRangeMax] = useState(7);
-  const [isSketchMode, setIsSketchMode] = useState(false);
-  const [peaks, setPeaks] = useState<SpectrumPeak[]>(PRESETS.twoCluster);
-  const [sketchPoints, setSketchPoints] = useState<SketchPoint[]>([]);
-  const [history, setHistory] = useState<Float64Array[]>([]);
+  const [showFullRange, setShowFullRange] = useState(false);
 
+  // -- State: Spectrum Mode --
+  const [isSketchMode, setIsSketchMode] = useState(false);
+
+  // -- State: Data --
+  const [peaks, setPeaks] = useState(PRESETS.twoCluster);
+  const [sketchPoints, setSketchPoints] = useState([]);
+  
+  // Store histories for all algorithms
+  const [histories, setHistories] = useState({
+    polar: [],
+    newton: [],
+    jordan: []
+  });
+
+  // -- Run Simulation --
   const runSimulation = useCallback(() => {
-    let initialSigmas: Float64Array;
+    let initialSigmas;
     if (isSketchMode && sketchPoints.length > 1) {
       initialSigmas = generateSigmasFromSketch(sketchPoints, rangeMin, rangeMax);
     } else {
@@ -390,72 +429,262 @@ export default function App() {
       }
     }
 
-    const coeffs = getCoeffsForConfig(numIters, safety, cushion);
-    const results = updateSigmas(initialSigmas, coeffs);
-    setHistory(results);
+    // Run all three algorithms regardless of view mode to support instant switching
+    const polarCoeffs = getCoeffsForConfig(numIters, safety, cushion);
+    
+    const hPolar = updateSigmas(initialSigmas, 'polar', polarCoeffs, numIters);
+    const hNewton = updateSigmas(initialSigmas, 'newton', [], numIters);
+    const hJordan = updateSigmas(initialSigmas, 'jordan', [], numIters);
+
+    setHistories({
+      polar: hPolar,
+      newton: hNewton,
+      jordan: hJordan
+    });
   }, [peaks, sketchPoints, isSketchMode, numIters, safety, cushion, rangeMin, rangeMax, normalizeFrobenius]);
 
+  // Run on mount and when params change
   useEffect(() => {
     const timer = setTimeout(() => runSimulation(), 150);
     return () => clearTimeout(timer);
   }, [runSimulation]);
 
-  const heatmapData = useMemo(() => {
-    if (history.length === 0) return null;
+  // -- Visualization Data Helper --
+  const generateHeatmapData = useCallback((historyData) => {
+    if (!historyData || historyData.length === 0) return null;
     const bins = 60;
-    const minLog = rangeMin;
-    const maxLog = rangeMax;
-    const xLabels = history.map((_, i) => i);
-    const yLabels = Array.from({ length: bins }, (_, i) => minLog + i * (maxLog - minLog) / bins);
+    let plotMin = rangeMin;
+    let plotMax = rangeMax;
 
-    const zData: number[][] = [];
+    if (showFullRange) {
+      let globalMin = Infinity;
+      let globalMax = -Infinity;
+      for (const stepData of historyData) {
+        for (const val of stepData) {
+          if (val > 1e-20 && val < 1e20) {
+             const lv = Math.log10(val);
+             if (lv < globalMin) globalMin = lv;
+             if (lv > globalMax) globalMax = lv;
+          }
+        }
+      }
+      if (globalMin === Infinity) { globalMin = -5; globalMax = 5; }
+      plotMin = globalMin - 0.5;
+      plotMax = globalMax + 0.5;
+    }
+
+    const xLabels = historyData.map((_, i) => i);
+    const yLabels = Array.from({ length: bins }, (_, i) => plotMin + i * (plotMax - plotMin) / bins);
+
+    const zData = [];
     for (let b = 0; b < bins; b++) zData.push([]);
 
-    history.forEach((sigmas) => {
-      const density = computeHistogram(sigmas, minLog, maxLog, bins);
+    historyData.forEach((sigmas) => {
+      const density = computeHistogram(sigmas, plotMin, plotMax, bins);
       density.forEach((d, binIdx) => {
         zData[binIdx].push(d);
       });
     });
-    return { x: xLabels, y: yLabels, z: zData };
-  }, [history, rangeMin, rangeMax]);
 
+    return { x: xLabels, y: yLabels, z: zData, plotMin, plotMax };
+  }, [rangeMin, rangeMax, showFullRange]);
+
+  // Compute heatmaps
+  const heatmaps = useMemo(() => {
+    return {
+      polar: generateHeatmapData(histories.polar),
+      newton: generateHeatmapData(histories.newton),
+      jordan: generateHeatmapData(histories.jordan),
+    };
+  }, [histories, generateHeatmapData]);
+
+  // -- Handlers --
   const addPeak = () => {
     const center = (rangeMin + rangeMax) / 2;
     setPeaks([...peaks, { id: crypto.randomUUID(), mean: center, std: 1, weight: 1 }]);
   };
-  const removePeak = (id: string) => setPeaks(peaks.filter(p => p.id !== id));
-  const updatePeak = (id: string, field: keyof SpectrumPeak, value: number) => {
+  const removePeak = (id) => setPeaks(peaks.filter(p => p.id !== id));
+  const updatePeak = (id, field, value) => {
     setPeaks(peaks.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
-  const loadPreset = (key: string) => {
+  const loadPreset = (key) => {
     setIsSketchMode(false);
     setPeaks(PRESETS[key].map(p => ({...p, id: crypto.randomUUID()})));
   };
+  const handleRangeChange = (valStr, setter) => {
+    if (valStr === '' || valStr === '-') {
+      setter(0); 
+      return;
+    }
+    const val = parseFloat(valStr);
+    if (!isNaN(val)) {
+      setter(val);
+    }
+  };
+
+  // Common Graph Components for Reusability
+  const HeatmapCard = ({ title, data, heightClass = "h-[400px]", showInfo = true, onExpand }) => (
+    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
+      <div 
+        className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
+        onClick={onExpand}
+      >
+        <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
+          <Activity className="w-4 h-4 text-indigo-500" /> {title}
+        </h3>
+        <div className="flex items-center gap-2">
+           <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
+              <Maximize className="w-3.5 h-3.5" />
+           </button>
+           {showInfo && (
+            <div className="group/info relative" onClick={(e) => e.stopPropagation()}>
+              <Info className="w-4 h-4 text-gray-300 hover:text-indigo-500 cursor-help transition-colors" />
+              <div className="absolute right-0 top-6 w-64 p-3 bg-slate-800 text-slate-100 text-xs rounded-lg shadow-xl opacity-0 group-hover/info:opacity-100 pointer-events-none z-50 transition-opacity border border-slate-700">
+                <p className="font-bold mb-1">Heatmap View</p>
+                <ul className="list-disc pl-3 space-y-1 opacity-90">
+                  <li>X-axis: Iteration steps</li>
+                  <li>Y-axis: Log10(Singular Value)</li>
+                  <li>Color: Density of values</li>
+                </ul>
+              </div>
+            </div>
+           )}
+        </div>
+      </div>
+      <div className="flex-1 p-2 relative">
+        {data && (
+          <PlotlyGraph
+            data={[{ z: data.z, x: data.x, y: data.y, type: 'heatmap', colorscale: 'Viridis', showscale: false }]}
+            layout={{ margin: { t: 10, r: 10, l: 40, b: 30 }, xaxis: { title: 'Iter' }, yaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 10} }}
+          />
+        )}
+      </div>
+    </div>
+  );
+
+  const LineCard = ({ title, data, heightClass = "h-[400px]", onExpand }) => (
+    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
+      <div 
+        className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
+        onClick={onExpand}
+      >
+         <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
+          <ChevronRight className="w-4 h-4 text-indigo-500" /> {title}
+        </h3>
+        <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
+            <Maximize className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="flex-1 p-2 relative">
+        {data && (
+          <PlotlyGraph
+            data={[
+              { x: data.y, y: data.z.map(row => row[0]), type: 'scatter', mode: 'lines', name: 'Initial', fill: 'tozeroy', line: { color: '#94a3b8', width: 2 } },
+              { x: data.y, y: data.z.map(row => row[row.length - 1]), type: 'scatter', mode: 'lines', name: 'Final', fill: 'tozeroy', line: { color: '#4f46e5', width: 3 } }
+            ]}
+            layout={{ margin: { t: 10, r: 10, l: 40, b: 30 }, xaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, yaxis: { title: 'Density' }, showlegend: false, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 10} }}
+          />
+        )}
+      </div>
+    </div>
+  );
+
+  const SurfaceCard = ({ title, data, heightClass = "h-[400px]", className = "", onExpand }) => (
+    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} ${className} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
+      <div 
+        className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
+        onClick={onExpand}
+      >
+        <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
+          <Maximize className="w-4 h-4 text-indigo-500" /> {title}
+        </h3>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded">Interactive</span>
+          <button className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-indigo-600 transition-colors" title="Expand">
+            <Maximize className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 p-2 relative">
+        {data && (
+          <PlotlyGraph
+            data={[{ z: data.z.map(row => row), x: data.x, y: data.y, type: 'surface', colorscale: 'Viridis', contours: { z: { show: true, usecolormap: true, highlightcolor: "#42f462", project: { z: true } } } }]}
+            layout={{ margin: { t: 0, r: 0, l: 0, b: 0 }, scene: { xaxis: { title: 'Iter' }, yaxis: { title: 'Log10(σ)', range: [data.plotMin, data.plotMax] }, zaxis: { title: 'Density' }, camera: { eye: { x: 1.5, y: 1.5, z: 1.2 } } }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 11} }}
+          />
+        )}
+      </div>
+    </div>
+  );
 
   return (
-    /* FIX: Added 'fixed inset-0' to break out of parent containers. 
-      Added 'text-left' to override inherited center alignment.
-    */
     <div className="fixed inset-0 w-screen h-screen bg-slate-50 text-slate-800 font-sans overflow-hidden flex flex-col text-left z-50">
       
       {/* Header */}
-      <header className="flex-none h-16 bg-indigo-600 text-white px-6 flex items-center justify-between shadow-md z-20">
-        <div className="flex items-center gap-3">
-          <Settings className="w-6 h-6 text-indigo-200" />
-          <h1 className="text-xl font-bold tracking-tight">Polar Express</h1>
+      <header className="flex-none h-16 bg-indigo-600 text-white px-4 md:px-6 flex items-center justify-between shadow-md z-20">
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="p-2 hover:bg-indigo-700 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          >
+            <Menu className="w-5 h-5 text-indigo-100" />
+          </button>
+          <div className="flex items-center gap-3">
+            <Settings className="w-6 h-6 text-indigo-200" />
+            <h1 className="text-xl font-bold tracking-tight">Polar Express</h1>
+          </div>
         </div>
-        <div className="text-xs md:text-sm text-indigo-100 opacity-90 font-medium">
-          SVD Evolution Visualization
+        <div className="text-xs md:text-sm text-indigo-100 opacity-90 font-medium flex items-center gap-4">
+           <span className="hidden md:inline">SVD Visualization</span>
         </div>
       </header>
 
       {/* Main Layout Wrapper */}
-      <div className="flex flex-1 flex-col md:flex-row overflow-hidden w-full">
+      <div className="flex flex-1 overflow-hidden w-full relative">
         
-        {/* LEFT SIDEBAR - Fixed width on desktop, scrollable */}
-        <aside className="flex-none w-full md:w-80 bg-white border-r border-gray-200 flex flex-col overflow-y-auto z-10 text-left shadow-sm">
-          
+        {/* LEFT SIDEBAR */}
+        <aside 
+          className={`
+            flex-none bg-white border-r border-gray-200 flex flex-col overflow-y-auto z-10 text-left shadow-sm transition-all duration-300 ease-in-out
+            ${isSidebarOpen ? 'w-full md:w-80 translate-x-0' : 'w-0 -translate-x-full overflow-hidden'}
+          `}
+        >
+          {/* View Mode */}
+          <div className="p-5 border-b border-gray-100">
+             <h2 className="text-xs uppercase tracking-wider text-gray-500 font-bold mb-4 flex items-center gap-2">
+               <Monitor className="w-4 h-4" /> View Mode
+             </h2>
+             <div className="flex bg-gray-100 p-1 rounded-lg">
+               <button
+                 onClick={() => setViewMode('single')}
+                 className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all flex items-center justify-center gap-1.5 ${viewMode === 'single' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+               >
+                 <LayoutTemplate className="w-3.5 h-3.5" /> Single
+               </button>
+               <button
+                 onClick={() => setViewMode('compare')}
+                 className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all flex items-center justify-center gap-1.5 ${viewMode === 'compare' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+               >
+                 <Columns className="w-3.5 h-3.5" /> Compare
+               </button>
+             </div>
+          </div>
+
+          {/* Algorithm Selection (Only in Single Mode) */}
+           <div className={`p-5 border-b border-gray-100 transition-all duration-200 ${viewMode === 'compare' ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
+            <h2 className="text-xs uppercase tracking-wider text-gray-500 font-bold mb-4 flex items-center gap-2">
+              <LayoutTemplate className="w-4 h-4" /> Algorithm
+            </h2>
+            <select 
+              value={algorithm} 
+              onChange={(e) => setAlgorithm(e.target.value)}
+              className="w-full p-2 text-sm border border-gray-300 rounded-md bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+            >
+              <option value="polar">Polar Express (New)</option>
+              <option value="newton">Newton-Schulz</option>
+              <option value="jordan">Jordan (Matrix Sign)</option>
+            </select>
+          </div>
+
           {/* Parameters Section */}
           <div className="p-5 border-b border-gray-100">
             <h2 className="text-xs uppercase tracking-wider text-gray-500 font-bold mb-4 flex items-center gap-2">
@@ -470,20 +699,23 @@ export default function App() {
                 <input type="range" min="1" max="20" step="1" value={numIters} onChange={(e) => setNumIters(parseInt(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
               </div>
               
-              <div className="w-full">
-                <div className="flex justify-between mb-1">
-                  <label className="text-sm font-medium text-gray-700">Safety</label>
-                  <span className="text-sm font-mono text-indigo-600 font-bold">{safety.toFixed(3)}</span>
-                </div>
-                <input type="range" min="1.00" max="1.10" step="0.001" value={safety} onChange={(e) => setSafety(parseFloat(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
-              </div>
+              {/* Polar Params - Only enabled if single & polar OR if compare mode (since Polar is part of comparison) */}
+              <div className={`transition-all duration-200 ${(viewMode === 'single' && algorithm !== 'polar') ? 'opacity-30 pointer-events-none' : ''}`}>
+                  <div className="w-full mb-5">
+                    <div className="flex justify-between mb-1">
+                      <label className="text-sm font-medium text-gray-700">PE Safety</label>
+                      <span className="text-sm font-mono text-indigo-600 font-bold">{safety.toFixed(3)}</span>
+                    </div>
+                    <input type="range" min="1.00" max="1.10" step="0.001" value={safety} onChange={(e) => setSafety(parseFloat(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
+                  </div>
 
-              <div className="w-full">
-                <div className="flex justify-between mb-1">
-                  <label className="text-sm font-medium text-gray-700">Cushion</label>
-                  <span className="text-sm font-mono text-indigo-600 font-bold">{cushion.toFixed(3)}</span>
-                </div>
-                <input type="range" min="0" max="0.1" step="0.001" value={cushion} onChange={(e) => setCushion(parseFloat(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
+                  <div className="w-full">
+                    <div className="flex justify-between mb-1">
+                      <label className="text-sm font-medium text-gray-700">PE Cushion</label>
+                      <span className="text-sm font-mono text-indigo-600 font-bold">{cushion.toFixed(3)}</span>
+                    </div>
+                    <input type="range" min="0" max="0.1" step="0.001" value={cushion} onChange={(e) => setCushion(parseFloat(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
+                  </div>
               </div>
 
               <div className="flex items-center justify-between pt-2">
@@ -506,14 +738,36 @@ export default function App() {
             <h2 className="text-xs uppercase tracking-wider text-gray-500 font-bold mb-4 flex items-center gap-2">
               <Maximize className="w-4 h-4" /> Grid Range (Log10)
             </h2>
-            <div className="flex gap-3">
+            
+            <div className="flex items-center gap-2 mb-4 bg-indigo-50 p-2 rounded-lg border border-indigo-100">
+              <Eye className="w-4 h-4 text-indigo-600" />
+              <span className="text-xs font-bold text-indigo-700 flex-1">Show Full Range</span>
+              <input 
+                type="checkbox" 
+                checked={showFullRange} 
+                onChange={(e) => setShowFullRange(e.target.checked)} 
+                className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 border-gray-300"
+              />
+            </div>
+
+            <div className={`flex gap-3 transition-opacity ${showFullRange ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
               <div className="flex-1">
                 <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">Min</label>
-                <input type="number" value={rangeMin} onChange={(e) => setRangeMin(Number(e.target.value))} className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all" />
+                <input 
+                  type="number" 
+                  value={rangeMin} 
+                  onChange={(e) => handleRangeChange(e.target.value, setRangeMin)} 
+                  className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all" 
+                />
               </div>
               <div className="flex-1">
                 <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">Max</label>
-                <input type="number" value={rangeMax} onChange={(e) => setRangeMax(Number(e.target.value))} className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all" />
+                <input 
+                  type="number" 
+                  value={rangeMax} 
+                  onChange={(e) => handleRangeChange(e.target.value, setRangeMax)} 
+                  className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all" 
+                />
               </div>
             </div>
           </div>
@@ -601,84 +855,170 @@ export default function App() {
           </div>
         </aside>
 
-        {/* RIGHT MAIN CONTENT - Takes remaining width */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-slate-100/50 relative">
-          <div className="flex-1 overflow-y-auto p-4 md:p-6">
+        {/* RIGHT MAIN CONTENT */}
+        <main className="flex-1 flex flex-col overflow-hidden bg-slate-100/50 relative w-full">
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-32">
             
-            {/* Grid Container for Charts */}
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 h-full content-start">
-              
-              {/* Chart 1: Heatmap */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[400px] md:h-[500px] relative overflow-hidden">
-                 <div className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white">
-                  <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-indigo-500" /> Spectrum Evolution
-                  </h3>
-                  <div className="group relative">
-                    <Info className="w-4 h-4 text-gray-300 hover:text-indigo-500 cursor-help transition-colors" />
-                    <div className="absolute right-0 top-6 w-64 p-3 bg-slate-800 text-slate-100 text-xs rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none z-50 transition-opacity border border-slate-700">
-                      <p className="font-bold mb-1">Heatmap View</p>
-                      <ul className="list-disc pl-3 space-y-1 opacity-90">
-                        <li>X-axis: Iteration steps</li>
-                        <li>Y-axis: Log10(Singular Value)</li>
-                        <li>Color: Density of values</li>
-                      </ul>
-                    </div>
-                  </div>
+            {viewMode === 'single' ? (
+              // --- SINGLE VIEW ---
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 h-full content-start">
+                <HeatmapCard 
+                    title="Spectrum Evolution" 
+                    data={heatmaps[algorithm]} 
+                    heightClass="h-[400px] md:h-[500px]"
+                    onExpand={() => setExpandedView({ type: 'heatmap', data: heatmaps[algorithm], title: 'Spectrum Evolution' })}
+                />
+                <LineCard 
+                    title="Initial vs. Final" 
+                    data={heatmaps[algorithm]} 
+                    heightClass="h-[400px] md:h-[500px]" 
+                    onExpand={() => setExpandedView({ type: 'line', data: heatmaps[algorithm], title: 'Initial vs Final' })}
+                />
+
+                {/* 3D Surface (Full Width on XL) */}
+                <SurfaceCard 
+                    title="3D Density Landscape" 
+                    data={heatmaps[algorithm]} 
+                    className="xl:col-span-2" 
+                    heightClass="h-[400px]" 
+                    onExpand={() => setExpandedView({ type: 'surface', data: heatmaps[algorithm], title: '3D Density Landscape' })}
+                />
+              </div>
+            ) : (
+              // --- COMPARISON VIEW ---
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 h-full content-start">
+                {/* Column 1: Polar */}
+                <div className="flex flex-col gap-4">
+                   <div className="font-bold text-center text-indigo-900 bg-indigo-50 py-2 rounded-lg border border-indigo-100">Polar Express</div>
+                   <HeatmapCard 
+                        title="Polar Evolution" 
+                        data={heatmaps.polar} 
+                        heightClass="h-[300px]" 
+                        showInfo={false} 
+                        onExpand={() => setExpandedView({ type: 'heatmap', data: heatmaps.polar, title: 'Polar Evolution' })}
+                   />
+                   <LineCard 
+                        title="Polar Initial vs Final" 
+                        data={heatmaps.polar} 
+                        heightClass="h-[250px]" 
+                        onExpand={() => setExpandedView({ type: 'line', data: heatmaps.polar, title: 'Polar Initial vs Final' })}
+                   />
+                   <SurfaceCard 
+                        title="Polar 3D" 
+                        data={heatmaps.polar} 
+                        heightClass="h-[250px]" 
+                        onExpand={() => setExpandedView({ type: 'surface', data: heatmaps.polar, title: 'Polar 3D' })}
+                   />
                 </div>
-                <div className="flex-1 p-2">
-                  {heatmapData && (
-                    <PlotlyGraph
-                      data={[{ z: heatmapData.z, x: heatmapData.x, y: heatmapData.y, type: 'heatmap', colorscale: 'Viridis', showscale: false }]}
-                      layout={{ margin: { t: 20, r: 20, l: 50, b: 40 }, xaxis: { title: 'Iteration' }, yaxis: { title: 'Log10(σ)' }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 11} }}
-                    />
-                  )}
+
+                {/* Column 2: Newton */}
+                <div className="flex flex-col gap-4">
+                   <div className="font-bold text-center text-indigo-900 bg-indigo-50 py-2 rounded-lg border border-indigo-100">Newton-Schulz</div>
+                   <HeatmapCard 
+                        title="Newton Evolution" 
+                        data={heatmaps.newton} 
+                        heightClass="h-[300px]" 
+                        showInfo={false} 
+                        onExpand={() => setExpandedView({ type: 'heatmap', data: heatmaps.newton, title: 'Newton Evolution' })}
+                   />
+                   <LineCard 
+                        title="Newton Initial vs Final" 
+                        data={heatmaps.newton} 
+                        heightClass="h-[250px]" 
+                        onExpand={() => setExpandedView({ type: 'line', data: heatmaps.newton, title: 'Newton Initial vs Final' })}
+                   />
+                   <SurfaceCard 
+                        title="Newton 3D" 
+                        data={heatmaps.newton} 
+                        heightClass="h-[250px]" 
+                        onExpand={() => setExpandedView({ type: 'surface', data: heatmaps.newton, title: 'Newton 3D' })}
+                   />
+                </div>
+
+                {/* Column 3: Jordan */}
+                <div className="flex flex-col gap-4">
+                   <div className="font-bold text-center text-indigo-900 bg-indigo-50 py-2 rounded-lg border border-indigo-100">Jordan (Matrix Sign)</div>
+                   <HeatmapCard 
+                        title="Jordan Evolution" 
+                        data={heatmaps.jordan} 
+                        heightClass="h-[300px]" 
+                        showInfo={false} 
+                        onExpand={() => setExpandedView({ type: 'heatmap', data: heatmaps.jordan, title: 'Jordan Evolution' })}
+                   />
+                   <LineCard 
+                        title="Jordan Initial vs Final" 
+                        data={heatmaps.jordan} 
+                        heightClass="h-[250px]" 
+                        onExpand={() => setExpandedView({ type: 'line', data: heatmaps.jordan, title: 'Jordan Initial vs Final' })}
+                   />
+                   <SurfaceCard 
+                        title="Jordan 3D" 
+                        data={heatmaps.jordan} 
+                        heightClass="h-[250px]" 
+                        onExpand={() => setExpandedView({ type: 'surface', data: heatmaps.jordan, title: 'Jordan 3D' })}
+                   />
                 </div>
               </div>
+            )}
 
-              {/* Chart 2: Initial vs Final */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[400px] md:h-[500px] relative overflow-hidden">
-                <div className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white">
-                   <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
-                    <ChevronRight className="w-4 h-4 text-indigo-500" /> Initial vs. Final
-                  </h3>
-                </div>
-                <div className="flex-1 p-2">
-                  {heatmapData && history.length > 0 && (
-                    <PlotlyGraph
-                      data={[
-                        { x: heatmapData.y, y: heatmapData.z.map(row => row[0]), type: 'scatter', mode: 'lines', name: 'Initial', fill: 'tozeroy', line: { color: '#94a3b8', width: 2 } },
-                        { x: heatmapData.y, y: heatmapData.z.map(row => row[row.length - 1]), type: 'scatter', mode: 'lines', name: 'Final', fill: 'tozeroy', line: { color: '#4f46e5', width: 3 } }
-                      ]}
-                      layout={{ margin: { t: 20, r: 20, l: 50, b: 40 }, xaxis: { title: 'Log10(σ)' }, yaxis: { title: 'Density' }, legend: { x: 1, xanchor: 'right', y: 1 }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 11} }}
-                    />
-                  )}
-                </div>
-              </div>
-
-              {/* Chart 3: 3D Surface (Full Width on XL) */}
-              <div className="xl:col-span-2 bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[400px] relative overflow-hidden">
-                <div className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white">
-                  <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
-                    <Maximize className="w-4 h-4 text-indigo-500" /> 3D Density Landscape
-                  </h3>
-                  <span className="text-[10px] uppercase font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded">Interactive</span>
-                </div>
-                <div className="flex-1 p-2">
-                  {heatmapData && (
-                    <PlotlyGraph
-                      data={[{ z: heatmapData.z.map(row => row), x: heatmapData.x, y: heatmapData.y, type: 'surface', colorscale: 'Viridis', contours: { z: { show: true, usecolormap: true, highlightcolor: "#42f462", project: { z: true } } } }]}
-                      layout={{ margin: { t: 0, r: 0, l: 0, b: 0 }, scene: { xaxis: { title: 'Iter' }, yaxis: { title: 'Log10(σ)' }, zaxis: { title: 'Density' }, camera: { eye: { x: 1.5, y: 1.5, z: 1.2 } } }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 11} }}
-                    />
-                  )}
-                </div>
-              </div>
-
-            </div>
           </div>
         </main>
 
       </div>
+
+      {/* EXPANDED VIEW OVERLAY */}
+      {expandedView && (
+        <div 
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-8 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200"
+            onClick={() => setExpandedView(null)}
+        >
+            <div 
+                className="bg-white w-full h-full max-w-6xl max-h-[85vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 ring-1 ring-white/10"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-white">
+                    <div className="flex items-center gap-3">
+                        {expandedView.type === 'heatmap' && <Activity className="w-6 h-6 text-indigo-500" />}
+                        {expandedView.type === 'line' && <ChevronRight className="w-6 h-6 text-indigo-500" />}
+                        {expandedView.type === 'surface' && <Maximize className="w-6 h-6 text-indigo-500" />}
+                        <h2 className="text-xl font-bold text-gray-800">{expandedView.title}</h2>
+                    </div>
+                    <button 
+                        onClick={() => setExpandedView(null)}
+                        className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500 hover:text-red-500"
+                    >
+                        <X className="w-6 h-6" />
+                    </button>
+                </div>
+                <div className="flex-1 p-4 bg-gray-50/50">
+                    {expandedView.type === 'heatmap' && (
+                        <PlotlyGraph
+                            data={[{ z: expandedView.data.z, x: expandedView.data.x, y: expandedView.data.y, type: 'heatmap', colorscale: 'Viridis', showscale: true }]}
+                            layout={{ margin: { t: 20, r: 20, l: 60, b: 50 }, xaxis: { title: 'Iteration' }, yaxis: { title: 'Log10(σ)', range: [expandedView.data.plotMin, expandedView.data.plotMax] }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 14} }}
+                        />
+                    )}
+                    {expandedView.type === 'line' && (
+                        <PlotlyGraph
+                            data={[
+                            { x: expandedView.data.y, y: expandedView.data.z.map(row => row[0]), type: 'scatter', mode: 'lines', name: 'Initial', fill: 'tozeroy', line: { color: '#94a3b8', width: 3 } },
+                            { x: expandedView.data.y, y: expandedView.data.z.map(row => row[row.length - 1]), type: 'scatter', mode: 'lines', name: 'Final', fill: 'tozeroy', line: { color: '#4f46e5', width: 4 } }
+                            ]}
+                            layout={{ margin: { t: 20, r: 20, l: 60, b: 50 }, xaxis: { title: 'Log10(σ)', range: [expandedView.data.plotMin, expandedView.data.plotMax] }, yaxis: { title: 'Density' }, showlegend: true, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 14} }}
+                        />
+                    )}
+                    {expandedView.type === 'surface' && (
+                        <PlotlyGraph
+                            data={[{ z: expandedView.data.z.map(row => row), x: expandedView.data.x, y: expandedView.data.y, type: 'surface', colorscale: 'Viridis', contours: { z: { show: true, usecolormap: true, highlightcolor: "#42f462", project: { z: true } } } }]}
+                            layout={{ margin: { t: 0, r: 0, l: 0, b: 0 }, scene: { xaxis: { title: 'Iter' }, yaxis: { title: 'Log10(σ)', range: [expandedView.data.plotMin, expandedView.data.plotMax] }, zaxis: { title: 'Density' }, camera: { eye: { x: 1.5, y: 1.5, z: 1.2 } } }, paper_bgcolor: 'rgba(0,0,0,0)', font: {family: 'sans-serif', size: 14} }}
+                        />
+                    )}
+                </div>
+                <div className="bg-gray-50 px-6 py-3 border-t border-gray-200 text-right text-xs text-gray-400">
+                    Click outside or press Esc to close
+                </div>
+            </div>
+        </div>
+      )}
     </div>
   );
 }
