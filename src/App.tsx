@@ -1,5 +1,46 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Play, RefreshCw, Settings, Plus, Trash2, Info, Maximize, PenTool, Activity, X, Scaling, ChevronRight, LayoutTemplate, Eye, Menu, Columns, Monitor, Minimize2 } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { Play, RefreshCw, Settings, Plus, Trash2, Info, Maximize, PenTool, Activity, X, Scaling, ChevronRight, LayoutTemplate, Eye, Menu, Columns, Monitor } from 'lucide-react';
+
+// --- Types & Interfaces ---
+
+interface Peak {
+  id: string;
+  mean: number;
+  std: number;
+  weight: number;
+}
+
+interface Point {
+  x: number;
+  y: number;
+}
+
+interface HeatmapData {
+  x: number[];
+  y: number[];
+  z: number[][];
+  plotMin: number;
+  plotMax: number;
+}
+
+interface ExpandedViewData {
+  type: 'heatmap' | 'line' | 'surface';
+  data: HeatmapData;
+  title: string;
+}
+
+interface Histories {
+  polar: Float64Array[];
+  newton: Float64Array[];
+  jordan: Float64Array[];
+}
+
+// Extend Window interface for Plotly
+declare global {
+  interface Window {
+    Plotly: any;
+  }
+}
 
 /**
  * ------------------------------------------------------------------
@@ -23,7 +64,7 @@ const DEFAULT_SAFETY = 1.01;
 const DEFAULT_CUSHION = 0.024;
 
 function getCoeffsForConfig(
-  numIters,
+  numIters: number,
   safety = DEFAULT_SAFETY,
   cushion = DEFAULT_CUSHION
 ) {
@@ -54,10 +95,10 @@ function getCoeffsForConfig(
 }
 
 function updateSigmas(
-  sigmas, 
-  algorithm,
-  coeffs, // For Polar
-  numIters      // For Newton/Jordan
+  sigmas: Float64Array | number[], 
+  algorithm: string,
+  coeffs: number[][], // For Polar
+  numIters: number    // For Newton/Jordan
 ) {
   const history = [new Float64Array(sigmas)];
   let currentSigmas = new Float64Array(sigmas);
@@ -109,7 +150,7 @@ function updateSigmas(
  * ------------------------------------------------------------------
  */
 
-const PRESETS = {
+const PRESETS: Record<string, Peak[]> = {
   flat: [
     { id: '1', mean: -4, std: 1.5, weight: 1 },
     { id: '2', mean: 0, std: 1.5, weight: 1 },
@@ -128,7 +169,7 @@ const PRESETS = {
   ]
 };
 
-function generateSigmasFromPeaks(peaks, count = 10000) {
+function generateSigmasFromPeaks(peaks: Peak[], count = 10000) {
   const sigmas = new Float64Array(count);
   const totalWeight = peaks.reduce((sum, p) => sum + p.weight, 0);
   let currentIndex = 0;
@@ -149,9 +190,9 @@ function generateSigmasFromPeaks(peaks, count = 10000) {
 }
 
 function generateSigmasFromSketch(
-  points,
-  minLog,
-  maxLog,
+  points: Point[],
+  minLog: number,
+  maxLog: number,
   count = 10000
 ) {
   if (points.length < 2) return new Float64Array(count).fill(Math.pow(10, (minLog + maxLog) / 2));
@@ -212,10 +253,10 @@ function generateSigmasFromSketch(
 }
 
 function computeHistogram(
-  values,
-  minLog,
-  maxLog,
-  bins
+  values: Float64Array | number[],
+  minLog: number,
+  maxLog: number,
+  bins: number
 ) {
   const histogram = new Array(bins).fill(0);
   // Avoid division by zero if min == max
@@ -244,7 +285,7 @@ function computeHistogram(
  */
 
 const usePlotly = () => {
-  const [plotly, setPlotly] = useState(null);
+  const [plotly, setPlotly] = useState<any>(null);
   useEffect(() => {
     if (window.Plotly) {
       setPlotly(window.Plotly);
@@ -259,9 +300,16 @@ const usePlotly = () => {
   return plotly;
 };
 
-const PlotlyGraph = ({ data, layout, style, config }) => {
+interface PlotlyGraphProps {
+  data: any[];
+  layout: any;
+  style?: React.CSSProperties;
+  config?: any;
+}
+
+const PlotlyGraph = ({ data, layout, style, config }: PlotlyGraphProps) => {
   const Plotly = usePlotly();
-  const containerRef = useRef(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   
   useEffect(() => {
     if (Plotly && containerRef.current) {
@@ -275,13 +323,20 @@ const PlotlyGraph = ({ data, layout, style, config }) => {
 };
 
 // --- DRAWING CANVAS COMPONENT ---
+interface SpectrumCanvasProps {
+  points: Point[];
+  setPoints: React.Dispatch<React.SetStateAction<Point[]>>;
+  rangeMin: number;
+  rangeMax: number;
+}
+
 const SpectrumCanvas = ({
   points,
   setPoints,
   rangeMin,
   rangeMax
-}) => {
-  const canvasRef = useRef(null);
+}: SpectrumCanvasProps) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
@@ -331,17 +386,17 @@ const SpectrumCanvas = ({
     ctx.fillText(`${rangeMax}`, w - 20, h - 4);
   }, [points, rangeMin, rangeMax]);
 
-  const handleInteract = (e) => {
+  const handleInteract = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     let clientX, clientY;
-    if (e.touches) {
+    if ('touches' in e) {
       clientX = e.touches[0].clientX;
       clientY = e.touches[0].clientY;
     } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
+      clientX = (e as React.MouseEvent).clientX;
+      clientY = (e as React.MouseEvent).clientY;
     }
 
     const x = (clientX - rect.left) / rect.width;
@@ -382,11 +437,11 @@ const SpectrumCanvas = ({
 export default function App() {
   // -- State: UI --
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [viewMode, setViewMode] = useState('single'); // 'single' | 'compare'
-  const [expandedView, setExpandedView] = useState(null); // { type: 'heatmap'|'line'|'surface', data, title }
+  const [viewMode, setViewMode] = useState<'single' | 'compare'>('single'); 
+  const [expandedView, setExpandedView] = useState<ExpandedViewData | null>(null);
 
   // -- State: Parameters --
-  const [algorithm, setAlgorithm] = useState('polar');
+  const [algorithm, setAlgorithm] = useState<string>('polar');
   const [numIters, setNumIters] = useState(8);
   const [safety, setSafety] = useState(1.01);
   const [cushion, setCushion] = useState(0.024);
@@ -401,11 +456,11 @@ export default function App() {
   const [isSketchMode, setIsSketchMode] = useState(false);
 
   // -- State: Data --
-  const [peaks, setPeaks] = useState(PRESETS.twoCluster);
-  const [sketchPoints, setSketchPoints] = useState([]);
+  const [peaks, setPeaks] = useState<Peak[]>(PRESETS.twoCluster);
+  const [sketchPoints, setSketchPoints] = useState<Point[]>([]);
   
   // Store histories for all algorithms
-  const [histories, setHistories] = useState({
+  const [histories, setHistories] = useState<Histories>({
     polar: [],
     newton: [],
     jordan: []
@@ -450,7 +505,7 @@ export default function App() {
   }, [runSimulation]);
 
   // -- Visualization Data Helper --
-  const generateHeatmapData = useCallback((historyData) => {
+  const generateHeatmapData = useCallback((historyData: Float64Array[]) : HeatmapData | null => {
     if (!historyData || historyData.length === 0) return null;
     const bins = 60;
     let plotMin = rangeMin;
@@ -476,7 +531,7 @@ export default function App() {
     const xLabels = historyData.map((_, i) => i);
     const yLabels = Array.from({ length: bins }, (_, i) => plotMin + i * (plotMax - plotMin) / bins);
 
-    const zData = [];
+    const zData: number[][] = [];
     for (let b = 0; b < bins; b++) zData.push([]);
 
     historyData.forEach((sigmas) => {
@@ -490,7 +545,7 @@ export default function App() {
   }, [rangeMin, rangeMax, showFullRange]);
 
   // Compute heatmaps
-  const heatmaps = useMemo(() => {
+  const heatmaps: Record<string, HeatmapData | null> = useMemo(() => {
     return {
       polar: generateHeatmapData(histories.polar),
       newton: generateHeatmapData(histories.newton),
@@ -503,15 +558,17 @@ export default function App() {
     const center = (rangeMin + rangeMax) / 2;
     setPeaks([...peaks, { id: crypto.randomUUID(), mean: center, std: 1, weight: 1 }]);
   };
-  const removePeak = (id) => setPeaks(peaks.filter(p => p.id !== id));
-  const updatePeak = (id, field, value) => {
+  const removePeak = (id: string) => setPeaks(peaks.filter(p => p.id !== id));
+  const updatePeak = (id: string, field: keyof Peak, value: number) => {
     setPeaks(peaks.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
-  const loadPreset = (key) => {
+  const loadPreset = (key: string) => {
     setIsSketchMode(false);
-    setPeaks(PRESETS[key].map(p => ({...p, id: crypto.randomUUID()})));
+    if (PRESETS[key]) {
+        setPeaks(PRESETS[key].map(p => ({...p, id: crypto.randomUUID()})));
+    }
   };
-  const handleRangeChange = (valStr, setter) => {
+  const handleRangeChange = (valStr: string, setter: (v: number) => void) => {
     if (valStr === '' || valStr === '-') {
       setter(0); 
       return;
@@ -523,7 +580,16 @@ export default function App() {
   };
 
   // Common Graph Components for Reusability
-  const HeatmapCard = ({ title, data, heightClass = "h-[400px]", showInfo = true, onExpand }) => (
+  interface CardProps {
+      title: string;
+      data: HeatmapData | null;
+      heightClass?: string;
+      showInfo?: boolean;
+      onExpand?: () => void;
+      className?: string;
+  }
+
+  const HeatmapCard = ({ title, data, heightClass = "h-[400px]", showInfo = true, onExpand }: CardProps) => (
     <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
       <div 
         className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
@@ -562,7 +628,7 @@ export default function App() {
     </div>
   );
 
-  const LineCard = ({ title, data, heightClass = "h-[400px]", onExpand }) => (
+  const LineCard = ({ title, data, heightClass = "h-[400px]", onExpand }: CardProps) => (
     <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
       <div 
         className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
@@ -589,7 +655,7 @@ export default function App() {
     </div>
   );
 
-  const SurfaceCard = ({ title, data, heightClass = "h-[400px]", className = "", onExpand }) => (
+  const SurfaceCard = ({ title, data, heightClass = "h-[400px]", className = "", onExpand }: CardProps) => (
     <div className={`bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col ${heightClass} ${className} relative overflow-hidden group hover:border-indigo-300 transition-all`}>
       <div 
         className="px-4 py-3 border-b border-gray-100 flex justify-between items-center bg-white cursor-pointer hover:bg-gray-50 transition-colors"
@@ -866,13 +932,13 @@ export default function App() {
                     title="Spectrum Evolution" 
                     data={heatmaps[algorithm]} 
                     heightClass="h-[400px] md:h-[500px]"
-                    onExpand={() => setExpandedView({ type: 'heatmap', data: heatmaps[algorithm], title: 'Spectrum Evolution' })}
+                    onExpand={() => heatmaps[algorithm] && setExpandedView({ type: 'heatmap', data: heatmaps[algorithm]!, title: 'Spectrum Evolution' })}
                 />
                 <LineCard 
                     title="Initial vs. Final" 
                     data={heatmaps[algorithm]} 
                     heightClass="h-[400px] md:h-[500px]" 
-                    onExpand={() => setExpandedView({ type: 'line', data: heatmaps[algorithm], title: 'Initial vs Final' })}
+                    onExpand={() => heatmaps[algorithm] && setExpandedView({ type: 'line', data: heatmaps[algorithm]!, title: 'Initial vs Final' })}
                 />
 
                 {/* 3D Surface (Full Width on XL) */}
@@ -881,7 +947,7 @@ export default function App() {
                     data={heatmaps[algorithm]} 
                     className="xl:col-span-2" 
                     heightClass="h-[400px]" 
-                    onExpand={() => setExpandedView({ type: 'surface', data: heatmaps[algorithm], title: '3D Density Landscape' })}
+                    onExpand={() => heatmaps[algorithm] && setExpandedView({ type: 'surface', data: heatmaps[algorithm]!, title: '3D Density Landscape' })}
                 />
               </div>
             ) : (
@@ -895,19 +961,19 @@ export default function App() {
                         data={heatmaps.polar} 
                         heightClass="h-[300px]" 
                         showInfo={false} 
-                        onExpand={() => setExpandedView({ type: 'heatmap', data: heatmaps.polar, title: 'Polar Evolution' })}
+                        onExpand={() => heatmaps.polar && setExpandedView({ type: 'heatmap', data: heatmaps.polar!, title: 'Polar Evolution' })}
                    />
                    <LineCard 
                         title="Polar Initial vs Final" 
                         data={heatmaps.polar} 
                         heightClass="h-[250px]" 
-                        onExpand={() => setExpandedView({ type: 'line', data: heatmaps.polar, title: 'Polar Initial vs Final' })}
+                        onExpand={() => heatmaps.polar && setExpandedView({ type: 'line', data: heatmaps.polar!, title: 'Polar Initial vs Final' })}
                    />
                    <SurfaceCard 
                         title="Polar 3D" 
                         data={heatmaps.polar} 
                         heightClass="h-[250px]" 
-                        onExpand={() => setExpandedView({ type: 'surface', data: heatmaps.polar, title: 'Polar 3D' })}
+                        onExpand={() => heatmaps.polar && setExpandedView({ type: 'surface', data: heatmaps.polar!, title: 'Polar 3D' })}
                    />
                 </div>
 
@@ -919,19 +985,19 @@ export default function App() {
                         data={heatmaps.newton} 
                         heightClass="h-[300px]" 
                         showInfo={false} 
-                        onExpand={() => setExpandedView({ type: 'heatmap', data: heatmaps.newton, title: 'Newton Evolution' })}
+                        onExpand={() => heatmaps.newton && setExpandedView({ type: 'heatmap', data: heatmaps.newton!, title: 'Newton Evolution' })}
                    />
                    <LineCard 
                         title="Newton Initial vs Final" 
                         data={heatmaps.newton} 
                         heightClass="h-[250px]" 
-                        onExpand={() => setExpandedView({ type: 'line', data: heatmaps.newton, title: 'Newton Initial vs Final' })}
+                        onExpand={() => heatmaps.newton && setExpandedView({ type: 'line', data: heatmaps.newton!, title: 'Newton Initial vs Final' })}
                    />
                    <SurfaceCard 
                         title="Newton 3D" 
                         data={heatmaps.newton} 
                         heightClass="h-[250px]" 
-                        onExpand={() => setExpandedView({ type: 'surface', data: heatmaps.newton, title: 'Newton 3D' })}
+                        onExpand={() => heatmaps.newton && setExpandedView({ type: 'surface', data: heatmaps.newton!, title: 'Newton 3D' })}
                    />
                 </div>
 
@@ -943,19 +1009,19 @@ export default function App() {
                         data={heatmaps.jordan} 
                         heightClass="h-[300px]" 
                         showInfo={false} 
-                        onExpand={() => setExpandedView({ type: 'heatmap', data: heatmaps.jordan, title: 'Jordan Evolution' })}
+                        onExpand={() => heatmaps.jordan && setExpandedView({ type: 'heatmap', data: heatmaps.jordan!, title: 'Jordan Evolution' })}
                    />
                    <LineCard 
                         title="Jordan Initial vs Final" 
                         data={heatmaps.jordan} 
                         heightClass="h-[250px]" 
-                        onExpand={() => setExpandedView({ type: 'line', data: heatmaps.jordan, title: 'Jordan Initial vs Final' })}
+                        onExpand={() => heatmaps.jordan && setExpandedView({ type: 'line', data: heatmaps.jordan!, title: 'Jordan Initial vs Final' })}
                    />
                    <SurfaceCard 
                         title="Jordan 3D" 
                         data={heatmaps.jordan} 
                         heightClass="h-[250px]" 
-                        onExpand={() => setExpandedView({ type: 'surface', data: heatmaps.jordan, title: 'Jordan 3D' })}
+                        onExpand={() => heatmaps.jordan && setExpandedView({ type: 'surface', data: heatmaps.jordan!, title: 'Jordan 3D' })}
                    />
                 </div>
               </div>
